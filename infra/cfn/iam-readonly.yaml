@@ -1,0 +1,115 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  KV capstone M1 - view-only managed policy + assumable role. DELIVERED AS CODE: the Academy
+  sandbox refuses IAM policy/role creation (ADR-0002, docs/m1/01-labrole-dissection.md).
+  Deploy with --capabilities CAPABILITY_NAMED_IAM in an account where you own IAM.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: kv
+    AllowedPattern: "^[a-z][a-z0-9-]{1,15}$"
+  EnvironmentName:
+    Type: String
+    Default: qa
+    AllowedValues: [qa, prod]
+  TrustedAccountId:
+    Type: String
+    AllowedPattern: "^\\d{12}$"
+    Description: >-
+      Account whose principals may assume the role. Those principals ALSO need their own
+      sts:AssumeRole allow (trust is checked on both sides).
+  RequireMfa:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+
+Conditions:
+  MfaRequired: !Equals [!Ref RequireMfa, "true"]
+
+Resources:
+  ReadOnlyPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${ProjectName}-${EnvironmentName}-view-only"
+      Description: View resources only. No write, no data-plane reads, no secrets.
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          # Resource "*" is unavoidable: Describe/List actions mostly do not support resource-level scoping.
+          - Sid: ViewResourcesOnly
+            Effect: Allow
+            Resource: "*"
+            Action:
+              - ec2:Describe*
+              - elasticloadbalancing:Describe*
+              - cloudformation:Describe*
+              - cloudformation:List*
+              - cloudformation:GetTemplateSummary
+              - cloudwatch:Describe*
+              - cloudwatch:List*
+              - cloudwatch:GetMetricData
+              - cloudwatch:GetMetricStatistics
+              - logs:Describe*
+              - lambda:List*
+              - lambda:GetFunctionConfiguration
+              - dynamodb:Describe*
+              - dynamodb:List*
+              - s3:ListAllMyBuckets
+              - s3:GetBucketLocation
+              - s3:GetBucketTagging
+              - s3:GetBucketVersioning
+              - s3:GetEncryptionConfiguration
+              - s3:GetBucketPublicAccessBlock
+              - iam:ListRoles
+              - iam:GetRole
+              - iam:ListPolicies
+              - iam:GetPolicy
+              - iam:GetPolicyVersion
+              - iam:ListAttachedRolePolicies
+              - iam:ListRolePolicies
+              - iam:GetRolePolicy
+              - servicequotas:List*
+              - servicequotas:GetServiceQuota
+          # Belt and braces: an explicit Deny wins over ANY allow the principal may also hold.
+          - Sid: DenyDataAndSecrets
+            Effect: Deny
+            Resource: "*"
+            Action:
+              - secretsmanager:GetSecretValue
+              - ssm:GetParameter
+              - ssm:GetParameters
+              - ssm:GetParametersByPath
+              - kms:Decrypt
+              - s3:GetObject
+              - dynamodb:GetItem
+              - dynamodb:BatchGetItem
+              - dynamodb:Query
+              - dynamodb:Scan
+              - ec2:GetPasswordData
+              - ec2:DescribeInstanceAttribute   # can return instance user-data (often contains secrets)
+
+  ReadOnlyRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-${EnvironmentName}-view-only"
+      Description: Assumable view-only role for the KV capstone
+      MaxSessionDuration: 3600
+      ManagedPolicyArns: [!Ref ReadOnlyPolicy]
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: sts:AssumeRole
+            Principal:
+              AWS: !Sub "arn:aws:iam::${TrustedAccountId}:root"
+            Condition: !If
+              - MfaRequired
+              - { Bool: { "aws:MultiFactorAuthPresent": "true" } }
+              - !Ref AWS::NoValue
+
+Outputs:
+  PolicyArn:
+    Value: !Ref ReadOnlyPolicy
+  RoleArn:
+    Value: !GetAtt ReadOnlyRole.Arn
